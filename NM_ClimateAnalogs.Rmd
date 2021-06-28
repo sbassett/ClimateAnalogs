@@ -1,0 +1,169 @@
+---
+title: "ClimateAnalogs"
+author: "sbassett@tnc.org"
+date: "6/27/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+install.packages("yaImpute")
+```
+
+# Climate Analogs
+
+What will the future climate be like for any given place in New Mexico?
+
+https://www.nature.com/articles/s41467-019-08540-3
+
+https://www.fs.fed.us/rm/pubs_journals/2019/rmrs_2019_holsinger_l001.pdf
+
+
+
+## Methods
+
+Data from the AdaptWest Project for the ensemble mean have been downloaded to 
+K:\Data\NorthAmerica\Climate
+
+Currently focusing on SSP3-7.0 for the 2050 time period.
+
+Experimenting with the VoCC package:
+García Molinos, J., Schoeman, D. S., Brown, C. J. and Burrows, M. T. (2019). VoCC: The Velocity of Climate Change and related climatic metrics. R package version 1.0.0. https://doi.org/10.5281/zenodo.3382092
+https://besjournals.onlinelibrary.wiley.com/doi/full/10.1111/2041-210X.13295
+
+
+``` {r VoCC_experiment}
+install.packages("devtools")
+devtools::install_github("JorGarMol/VoCC", dependencies = TRUE, build_vignettes = FALSE)
+# Alternatively call without building the vignette to save installation time
+library(VoCC)
+citation("VoCC")
+
+```
+
+This paper looks promising: https://onlinelibrary.wiley.com/doi/full/10.1111/gcb.12736
+
+``` {r multivariateVelocity}
+#based heavily on code from appendix 3 of https://adaptwest.databasin.org/pages/adaptwest-velocitywna/
+# Multivariate extension of the R code shown in Appendix 2. This sample also
+# uses a more efficient k-nearest neighbor search, and writes out source and 
+# target coordinates in a table for further analysis. The variables p1 and p2 
+# represent principle components, but they could stand for any climate variable
+# (about 5 minutes to process 1 million grid cells). 
+
+library(yaImpute)     # install package for k-nearest neighbour (kNN) search
+library(raster)
+
+# modify this to accommodate approach from https://www.fs.fed.us/rm/pubs_journals/2019/rmrs_2019_holsinger_l001.pdf
+  # Hargreave's climatic moisture deficit (CMD, mm/year)
+  # Hargreave's reference evaporation minus CMD (hereafter evapotranspiration [ET, mm/year]).
+
+#CMD data from adaptwest — Hargreave's climatic moisture deficit
+CMD_present <- raster("K:\\Data\\NorthAmerica\\Climate\\Normal_1961_1990_bioclim\\bioclim\\Normal_1961_1990_CMD.tif") 
+
+#Eref data from adaptwest — Hargreave's reference evaporation
+RE_present <- raster ("K:\\Data\\NorthAmerica\\Climate\\Normal_1961_1990_bioclim\\bioclim\\Normal_1961_1990_Eref.tif")
+
+#calculated observed evapotranspiration  
+ET_present <- RE_present - CMD_present
+
+#CMD data from adaptwest — Hargreave's climatic moisture deficit
+CMD_future <- raster("K:\\Data\\NorthAmerica\\Climate\\ensemble_ssp370_2071_bioclim\\bioclim\\ensemble_ssp370_2071_CMD.tif")
+
+#Eref data from adaptwest — Hargreave's reference evaporation
+RE_future <- raster("K:\\Data\\NorthAmerica\\Climate\\ensemble_ssp370_2071_bioclim\\bioclim\\ensemble_ssp370_2071_Eref.tif")
+
+#calculated projected evapotranspiration 
+ET_future <- RE_future - CMD_future
+
+#follow this to convert rasters to data frames as needed by the code:
+  # https://datacarpentry.org/r-raster-vector-geospatial/01-raster-structure/
+
+present1 <- as.data.frame(CMD_present, xy = TRUE)
+present2 <- as.data.frame(ET_present, xy = TRUE)
+future1 <- as.data.frame(CMD_future, xy = TRUE)
+future2 <- as.data.frame(ET_future, xy = TRUE)
+
+# present1 <- asc2dataframe("C:\Your Path\PC1_6190.asc") # principal component grids
+# present2 <- asc2dataframe("C:\Your Path\PC2_6190.asc")
+# future1  <- asc2dataframe("C:\Your Path\PC1_2020s.asc")
+# future2  <- asc2dataframe("C:\Your Path\PC2_2020s.asc")
+
+idxy <- cbind(id=1:nrow(present1),present1[,1:2])   # data frame of IDs and XY coords
+b <- (max(present1[,3],na.rm = TRUE)-min(present1[,3], na.rm = TRUE))/120  # bin size for 120 PC1 bins
+
+p1 <- round(present1[,3]/b)              # convert PC1 to 120 bins via rounding
+p2 <- round(present2[,3]/b)              # convert PC2 to <120 bins via rounding
+f1 <- round(future1[,3]/b)               # same for future PC1
+f2 <- round(future2[,3]/b)               # same for future PC2
+p  <- paste(p1,p2)                         # PC1/PC2 combinations in present climate
+f  <- paste(f1,f2)                         # PC1/PC2 combinations in future climate
+u  <- unique(p)[order(unique(p))]          # list of unique PC1/PC2 combinations
+
+sid <- c()                                 # empty vector for source IDs
+tid <- c()                                 # empty vector for target IDs
+d   <- c()                                 # empty vector for distances
+
+for(i in u){                          # loop for each unique PC1/PC2 combination
+  pxy <- idxy[which(p==i),]           # coordinates of i-th combination in present
+  fxy <- idxy[which(f==i),]           # coordinates of i-th combination in future
+  sid <- c(sid, pxy$id)               # append i-th PC1/PC2 combination to previous 
+
+  if(nrow(fxy)>0){                    # kNN search unless no-analogue climate
+     knn <- data.frame(ann(as.matrix(fxy[,-1]), as.matrix(pxy[,-1]), k=1)$knnIndexDist)      
+     tid <- c(tid, fxy[knn[,1],"id"]) # the IDs of the closest matches  
+     d <- c(d, sqrt(knn[,2]))         # their corresponding geographic distances
+     }
+  else {                              # else statement for no-analogue climates
+     tid <- c(tid, rep(NA,nrow(pxy))) # flag destinations as missing for no analogues
+     d <- c(d, rep(Inf,nrow(pxy)))    # flag distances as infinity for no analogues
+     }
+  }
+
+sxy <- merge(sid, idxy, by.y="id", all.x=T, all.y=F, sort=F)[2:3]  # source coordinates
+txy <- merge(tid, idxy, by.y="id", all.x=T, all.y=F, sort=F)[2:3]  # target coordinates
+names(txy)=c("target_y","target_x")
+
+
+# write output table in CSV format with source and target coordinates and distances
+outtab <- cbind(id=sid, sxy, txy, distance=d)   
+write.csv(outtab, "output.csv", row.names=F)
+
+
+# writes out log10 velocities and distances multiplied by 100 in ESRI ASCII format
+# conversion: -200=0.01km, -100=0.1km, 0=1km, 100=10km, 200=100km etc.
+out=merge(present1[,1:2], outtab[,c(2,3,6)], by=c("y","x"), sort=F)
+out$distance[out$distance==Inf] <- 10000  # sets no analogue to 10,000km
+out$distance[out$distance==0] <- 0.5  # sets zero distance to 0.5km (1/2 cell size)
+out$logDist=round(log10(out$distance)*100)
+out$logSpeed=round(log10(out$distance/50)*100)
+dataframe2asc(out)
+
+```
+
+
+## Discussion
+Microclimates
+Compact elevation gradients (within 1km grid cell)
+Matrix of velocity against vegtype.
+  Mean velocity by veg type.
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
